@@ -1,4 +1,4 @@
-<img src="assets/logo.png width=400px">
+<img src="assets/logo.png" width="400px">
 
 # jsoncanon — canonical JSON
 
