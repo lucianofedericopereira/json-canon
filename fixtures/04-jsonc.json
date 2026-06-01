@@ -1,0 +1,5 @@
+{
+  // a line comment
+  "a": 1, /* block */ "b": 2,
+  "uni": "café 😀"
+}

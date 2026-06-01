@@ -1,0 +1,10 @@
+{
+  // JSON5: unquoted keys, hex, comments, trailing commas
+  unquoted: 1,
+  $id: 0x2A,
+  _flag: True,
+  color: 0xFFcc00,
+  big: 0xFFFFFFFFFFFFFFFFFFFFFFFFFF,
+  escaped: "tab\x09and\x21",
+  nested: { b: 2, a: 1, },
+}
