@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "jsoncanon"
 version = "0.1.0"
 description = "Canonical JSON normalizer — deterministic byte output across producers"
-readme = "../README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 
