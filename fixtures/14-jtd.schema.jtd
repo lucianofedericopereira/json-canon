@@ -1,0 +1,10 @@
+{
+  "properties": {
+    "id": {"type": "uint32"},
+    "name": {"type": "string"},
+    "tags": {"elements": {"type": "string"}}
+  },
+  "optionalProperties": {
+    "active": {"type": "boolean"}
+  }
+}

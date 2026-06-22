@@ -1,0 +1,46 @@
+name: CI
+
+# Runs the full cross-language gate: mypy --strict, pyright, nim check, both
+# test suites, and tools/parity.sh (Nim == Python == golden), plus the Ryu
+# fuzz against node.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.0.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python package (dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "python[dev]"
+
+      - name: Build Nim CLI
+        run: cd nim && nimble build -y
+
+      - name: Full gate (check.sh)
+        run: bash tools/check.sh
+
+      - name: Ryu shortest-float fuzz vs node (2M doubles)
+        run: |
+          nim c --hints:off --warnings:off -d:release nim/tests/ryu_filter.nim
+          python3 tools/fuzz_ryu.py 2000000
+
+      - name: Cross-language JCS token parity (200k)
+        run: python3 tools/parity_jcs.py 200000

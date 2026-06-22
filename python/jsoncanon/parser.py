@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Literal, NoReturn, Union, overload
 
+from ._json5_ident import is_json5_id_start, is_json5_id_continue
+
 # A parsed JSON value. Numbers are Number (raw token), non-finites NonFinite.
 JValue = Union[
     dict[str, "JValue"], list["JValue"], str, bool, None, "Number", "NonFinite",
@@ -41,6 +43,45 @@ class JSONError(ValueError):
 
 _WS = " \t\n\r\v\f"  # JSON5 also treats vertical-tab / form-feed as whitespace
 _HEXDIGITS = "0123456789abcdefABCDEF"
+
+
+def _valid_number_token(tok: str) -> bool:
+    """Matches ^[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?$ — the lenient number
+    grammar (numbers.py _NUM_RE). Identical algorithm to Nim's validNumberToken,
+    so a malformed token ("1e", "1.2.3", "1e30.5") is a clean parse error."""
+    i, n = 0, len(tok)
+    if i < n and tok[i] in "+-":
+        i += 1
+    mstart = i
+    if i < n and tok[i] == ".":
+        i += 1
+        ds = i
+        while i < n and tok[i].isdigit():
+            i += 1
+        if i == ds:
+            return False
+    else:
+        ds = i
+        while i < n and tok[i].isdigit():
+            i += 1
+        if i == ds:
+            return False
+        if i < n and tok[i] == ".":
+            i += 1
+            while i < n and tok[i].isdigit():
+                i += 1
+    if i == mstart:
+        return False
+    if i < n and tok[i] in "eE":
+        i += 1
+        if i < n and tok[i] in "+-":
+            i += 1
+        es = i
+        while i < n and tok[i].isdigit():
+            i += 1
+        if i == es:
+            return False
+    return i == n
 _BOMS = [
     (b"\xff\xfe\x00\x00", "utf-32-le"),
     (b"\x00\x00\xfe\xff", "utf-32-be"),
@@ -65,18 +106,51 @@ def decode_bytes(data: bytes, encoding: str | None = None) -> str:
 
 class Parser:
     def __init__(self, text: str, strict_dupes: bool = False,
-                 collect_diags: bool = False) -> None:
+                 collect_diags: bool = False, force: bool = False) -> None:
         self.s = text
         self.i = 0
         self.n = len(text)
         self.strict_dupes = strict_dupes
         self.collect_diags = collect_diags
         self.diags: list[Diag] = []
+        self.force = force
+        self.fwarn: list[Diag] = []
 
     # -- helpers ----------------------------------------------------------
     def _diag(self, pos: int, category: str, message: str) -> None:
         if self.collect_diags:
             self.diags.append((pos, category, message))
+
+    def _recover(self, pos: int, message: str) -> None:
+        self.fwarn.append((pos, "recover", message))
+
+    def _skip_to_delim(self) -> None:
+        """Force-mode resync: advance to the next ',' '}' or ']' at the current
+        depth, skipping nested containers and strings. Leaves i at the delimiter."""
+        s, n = self.s, self.n
+        depth = 0
+        while self.i < n:
+            c = s[self.i]
+            if c == '"' or c == "'":
+                self.i += 1
+                while self.i < n and s[self.i] != c:
+                    if s[self.i] == "\\":
+                        self.i += 1
+                    self.i += 1
+                if self.i < n:
+                    self.i += 1
+            elif c in "[{":
+                depth += 1
+                self.i += 1
+            elif c in "]}":
+                if depth == 0:
+                    return
+                depth -= 1
+                self.i += 1
+            elif c == "," and depth == 0:
+                return
+            else:
+                self.i += 1
 
     def _err(self, msg: str) -> NoReturn:
         raise JSONError(f"{msg} at position {self.i}")
@@ -143,21 +217,36 @@ class Parser:
             return obj
         while True:
             self._skip_ws()
-            q = self._peek()
-            if q in ('"', "'"):
-                key = self._string(q)
+            if self.force:
+                mem_start = self.i
+                try:
+                    q = self._peek()
+                    key = self._string(q) if q in ('"', "'") else self._ident_key()
+                    self._skip_ws()
+                    if self._peek() != ":":
+                        self._err("expected ':'")
+                    self.i += 1
+                    val = self._value()
+                    obj[key] = val  # last wins
+                except JSONError:
+                    self._recover(mem_start, "dropped malformed object member")
+                    self._skip_to_delim()
             else:
-                key = self._ident_key()
-            self._skip_ws()
-            if self._peek() != ":":
-                self._err("expected ':'")
-            self.i += 1
-            val = self._value()
-            if key in obj:
-                if self.strict_dupes:
-                    self._err(f"duplicate key {key!r}")
-                self._diag(self.i, "duplicate-key", f"duplicate key {key!r} (last value wins)")
-            obj[key] = val  # last wins
+                q = self._peek()
+                if q in ('"', "'"):
+                    key = self._string(q)
+                else:
+                    key = self._ident_key()
+                self._skip_ws()
+                if self._peek() != ":":
+                    self._err("expected ':'")
+                self.i += 1
+                val = self._value()
+                if key in obj:
+                    if self.strict_dupes:
+                        self._err(f"duplicate key {key!r}")
+                    self._diag(self.i, "duplicate-key", f"duplicate key {key!r} (last value wins)")
+                obj[key] = val  # last wins
             self._skip_ws()
             c = self._peek()
             if c == ",":
@@ -171,6 +260,19 @@ class Parser:
             if c == "}":
                 self.i += 1
                 return obj
+            if self.force:
+                if c == "":
+                    self._recover(self.i, "unterminated object at end of input")
+                    return obj
+                self._recover(self.i, "unexpected token in object")
+                self._skip_to_delim()
+                if self._peek() == "}":
+                    self.i += 1
+                    return obj
+                if self._peek() == ",":
+                    self.i += 1
+                    continue
+                return obj
             self._err("expected ',' or '}'")
 
     def _array(self) -> list[JValue]:
@@ -181,7 +283,15 @@ class Parser:
             self.i += 1
             return arr
         while True:
-            arr.append(self._value())
+            if self.force:
+                elem_start = self.i
+                try:
+                    arr.append(self._value())
+                except JSONError:
+                    self._recover(elem_start, "dropped malformed array element")
+                    self._skip_to_delim()
+            else:
+                arr.append(self._value())
             self._skip_ws()
             c = self._peek()
             if c == ",":
@@ -195,27 +305,85 @@ class Parser:
             if c == "]":
                 self.i += 1
                 return arr
+            if self.force:
+                if c == "":
+                    self._recover(self.i, "unterminated array at end of input")
+                    return arr
+                self._recover(self.i, "unexpected token in array")
+                self._skip_to_delim()
+                if self._peek() == "]":
+                    self.i += 1
+                    return arr
+                if self._peek() == ",":
+                    self.i += 1
+                    continue
+                return arr
             self._err("expected ',' or ']'")
 
     @staticmethod
-    def _ident_start(c: str) -> bool:
-        return c.isascii() and (c.isalpha() or c in "_$")
+    def _is_id_start(cp: int) -> bool:
+        if cp < 0x80:
+            c = chr(cp)
+            return c.isalpha() or c in "_$"
+        return is_json5_id_start(cp)
 
     @staticmethod
-    def _ident_part(c: str) -> bool:
-        return c.isascii() and (c.isalnum() or c in "_$")
+    def _is_id_continue(cp: int) -> bool:
+        if cp < 0x80:
+            c = chr(cp)
+            return c.isalnum() or c in "_$"
+        return is_json5_id_continue(cp)
+
+    def _ident_codepoint(self) -> int:
+        """Consume one identifier unit — a ``\\uXXXX`` escape (with optional
+        surrogate pairing) or a raw code point — and return it."""
+        s = self.s
+        if s[self.i] == "\\":
+            if s[self.i + 1:self.i + 2] != "u":
+                self._err("invalid identifier escape")
+            cp = int(s[self.i + 2:self.i + 6], 16)
+            self.i += 6
+            if 0xD800 <= cp <= 0xDBFF and s[self.i:self.i + 2] == "\\u":
+                lo = int(s[self.i + 2:self.i + 6], 16)
+                if 0xDC00 <= lo <= 0xDFFF:
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                    self.i += 6
+            return cp
+        cp = ord(s[self.i])
+        self.i += 1
+        return cp
 
     def _ident_key(self) -> str:
+        """JSON5 unquoted key: ASCII / Unicode (ID_Start / ID_Continue) /
+        ``\\u``-escaped identifier (SPEC §1.2)."""
         s, n = self.s, self.n
         start = self.i
-        if self.i >= n or not self._ident_start(s[self.i]):
+        if self.i >= n:
             self._err("expected string key")
-        self.i += 1
-        while self.i < n and self._ident_part(s[self.i]):
-            self.i += 1
-        self._diag(start, "unquoted-key",
-                   f"unquoted key {s[start:self.i]!r} is JSON5, not JSON")
-        return s[start:self.i]
+        cp = self._ident_codepoint()
+        if not self._is_id_start(cp):
+            self.i = start
+            self._err("expected string key")
+        out = [chr(cp)]
+        while self.i < n:
+            save = self.i
+            if s[self.i] == "\\":
+                if s[self.i + 1:self.i + 2] != "u":
+                    break
+                cp = self._ident_codepoint()
+                if not self._is_id_continue(cp):
+                    self.i = save
+                    break
+                out.append(chr(cp))
+            else:
+                cp = ord(s[self.i])
+                if not self._is_id_continue(cp):
+                    break
+                self.i += 1
+                out.append(chr(cp))
+        key = "".join(out)
+        self._diag(start, "unquoted-key", f"unquoted key {key!r} is JSON5, not JSON")
+        return key
 
     def _string(self, quote: str) -> str:
         s, n = self.s, self.n
@@ -316,8 +484,8 @@ class Parser:
                 break
             self.i += 1
         tok = s[start:self.i]
-        if tok in ("", "+", "-"):
-            self._err("invalid number")
+        if not _valid_number_token(tok):
+            self._err(f"invalid number {tok!r}")
         body = tok[1:] if tok[:1] in "+-" else tok
         if tok[:1] == "+":
             self._diag(start, "number-syntax", f"leading '+' in number {tok!r}")
@@ -363,10 +531,46 @@ def loads(text: str, *, strict_dupes: bool = False,
     return (val, p.diags) if collect_diags else val
 
 
+def parse_force(text: str, *, strict_dupes: bool = False) -> tuple[JValue, list[Diag]]:
+    """Best-effort recovery parse (--force): salvage as much as parses, dropping
+    malformed members/elements and trailing garbage, recording warnings."""
+    p = Parser(text, strict_dupes=strict_dupes, force=True)
+    p._skip_ws()
+    try:
+        val: JValue = p._value()
+    except JSONError:
+        p._recover(p.i, "could not parse a value; using null")
+        val = None
+    p._skip_ws()
+    if p.i != p.n:
+        p._recover(p.i, "dropped trailing data after the value")
+    return val, p.fwarn
+
+
 def load_ndjson(text: str, *, strict_dupes: bool = False) -> list[JValue]:
     vals: list[JValue] = []
     for line in text.splitlines():
         if line.strip() == "":
             continue
         vals.append(Parser(line, strict_dupes=strict_dupes).parse())
+    return vals
+
+
+def load_stream(text: str, *, strict_dupes: bool = False) -> list[JValue]:
+    """Parse a sequence of top-level values: RFC 7464 JSON Text Sequences
+    (RS-prefixed, LF-terminated records), whitespace-separated values, and
+    directly concatenated values — all handled by one lenient reader."""
+    p = Parser(text, strict_dupes=strict_dupes)
+    vals: list[JValue] = []
+    n = p.n
+    while True:
+        while True:  # skip ws / comments / RS framing
+            p._skip_ws()
+            if p.i < n and text[p.i] == "\x1e":
+                p.i += 1
+            else:
+                break
+        if p.i >= n:
+            break
+        vals.append(p._value())
     return vals

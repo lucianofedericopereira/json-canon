@@ -1,0 +1,133 @@
+\begin{thebibliography}{20}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Adams(2018)]{ryu}
+U.~Adams.
+\newblock Ry{\=u}: Fast float-to-string conversion.
+\newblock In \emph{Proceedings of the 39th ACM SIGPLAN Conference on
+  Programming Language Design and Implementation (PLDI)}, pages 270--282. ACM,
+  2018.
+\newblock \doi{10.1145/3192366.3192369}.
+
+\bibitem[Birkholz et~al.(2019)Birkholz, Vigano, and Bormann]{rfc8610}
+H.~Birkholz, C.~Vigano, and C.~Bormann.
+\newblock Concise data definition language ({CDDL}).
+\newblock Technical Report RFC 8610, IETF, 2019.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc8610}.
+
+\bibitem[Bormann and Hoffman(2020)]{rfc8949}
+C.~Bormann and P.~E. Hoffman.
+\newblock Concise binary object representation ({CBOR}).
+\newblock Internet Standard (STD 94) RFC 8949, IETF, 2020.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc8949}.
+
+\bibitem[Bray(2015)]{rfc7493}
+T.~Bray.
+\newblock The {I-JSON} message format.
+\newblock Technical Report RFC 7493, IETF, 2015.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc7493}.
+
+\bibitem[Bray(2017)]{rfc8259}
+T.~Bray.
+\newblock The {JavaScript} {Object} {Notation} ({JSON}) data interchange
+  format.
+\newblock Internet Standard (STD 90) RFC 8259, IETF, 2017.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc8259}.
+
+\bibitem[Bryan and Nottingham(2013)]{rfc6902}
+P.~C. Bryan and M.~Nottingham.
+\newblock {JavaScript} {Object} {Notation} ({JSON}) patch.
+\newblock Technical Report RFC 6902, IETF, 2013.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc6902}.
+
+\bibitem[Bryan et~al.(2013)Bryan, Zyp, and Nottingham]{rfc6901}
+P.~C. Bryan, K.~Zyp, and M.~Nottingham.
+\newblock {JavaScript} {Object} {Notation} ({JSON}) pointer.
+\newblock Technical Report RFC 6901, IETF, 2013.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc6901}.
+
+\bibitem[Butler et~al.(2016)Butler, Daly, Doyle, Gillies, Hagen, and
+  Schaub]{rfc7946}
+H.~Butler, M.~Daly, A.~Doyle, S.~Gillies, S.~Hagen, and T.~Schaub.
+\newblock The {GeoJSON} format.
+\newblock Technical Report RFC 7946, IETF, 2016.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc7946}.
+
+\bibitem[Carion(2020)]{rfc8927}
+U.~Carion.
+\newblock {JSON} type definition.
+\newblock Technical Report RFC 8927, IETF, 2020.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc8927}.
+
+\bibitem[Fang(2015)]{jdata}
+Q.~Fang.
+\newblock {JData}: A general-purpose data annotation and interchange format.
+\newblock NeuroJSON, 2015.
+\newblock URL \url{https://neurojson.org/}.
+
+\bibitem[Furuhashi(2008)]{msgpack}
+S.~Furuhashi.
+\newblock {MessagePack} specification, 2008.
+\newblock URL \url{https://github.com/msgpack/msgpack/blob/master/spec.md}.
+
+\bibitem[Hoffman and Snell(2014)]{rfc7386}
+P.~E. Hoffman and J.~M. Snell.
+\newblock {JSON} merge patch.
+\newblock Technical Report RFC 7386, IETF, 2014.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc7386}.
+
+\bibitem[Jones et~al.(2015)Jones, Bradley, and Sakimura]{rfc7515}
+M.~B. Jones, J.~Bradley, and N.~Sakimura.
+\newblock {JSON} web signature ({JWS}).
+\newblock Technical Report RFC 7515, IETF, 2015.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc7515}.
+
+\bibitem[Kishore et~al.(2023)Kishore, Nanasy, Eisenberg, et~al.]{json5}
+A.~Kishore, M.~Nanasy, A.~Eisenberg, et~al.
+\newblock {JSON5} data interchange format, 2023.
+\newblock URL \url{https://json5.org/}.
+
+\bibitem[McKeeman(1998)]{mckeeman}
+W.~M. McKeeman.
+\newblock Differential testing for software.
+\newblock \emph{Digital Technical Journal}, 10\penalty0 (1):\penalty0 100--107,
+  1998.
+
+\bibitem[McKinney(2010)]{pandas}
+W.~McKinney.
+\newblock Data structures for statistical computing in {Python}.
+\newblock In \emph{Proceedings of the 9th Python in Science Conference
+  (SciPy)}, pages 56--61, 2010.
+\newblock \doi{10.25080/Majora-92bf1922-00a}.
+
+\bibitem[Rundgren et~al.(2020)Rundgren, Jordan, and Erdtman]{rfc8785}
+A.~Rundgren, B.~Jordan, and S.~Erdtman.
+\newblock {JSON} canonicalization scheme ({JCS}).
+\newblock Technical Report RFC 8785, IETF, 2020.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc8785}.
+
+\bibitem[Williams(2015)]{rfc7464}
+N.~Williams.
+\newblock {JavaScript} {Object} {Notation} ({JSON}) text sequences.
+\newblock Technical Report RFC 7464, IETF, 2015.
+\newblock URL \url{https://www.rfc-editor.org/rfc/rfc7464}.
+
+\bibitem[Wright et~al.(2022)Wright, Andrews, and Hutton]{jsonschema}
+A.~Wright, H.~Andrews, and B.~Hutton.
+\newblock {JSON} schema: A media type for describing {JSON} documents, draft
+  2020-12, 2022.
+\newblock URL \url{https://json-schema.org/specification}.
+
+\bibitem[Yang et~al.(2011)Yang, Chen, Eide, and Regehr]{csmith}
+X.~Yang, Y.~Chen, E.~Eide, and J.~Regehr.
+\newblock Finding and understanding bugs in {C} compilers.
+\newblock In \emph{Proceedings of the 32nd ACM SIGPLAN Conference on
+  Programming Language Design and Implementation (PLDI)}, pages 283--294. ACM,
+  2011.
+\newblock \doi{10.1145/1993498.1993532}.
+
+\end{thebibliography}

@@ -23,6 +23,9 @@ echo "===== Tests ====="
 ( cd python && run "pytest" "$PY" -m pytest tests/ -q )
 run "nim unittest" nim c -r --hints:off --warnings:off nim/tests/test_canon.nim
 
+echo "===== Build CLI (needed by parity.sh) ====="
+run "nim build jsoncanon_cli" nim c --hints:off --warnings:off -o:nim/jsoncanon_cli nim/src/jsoncanon_cli.nim
+
 echo "===== Cross-language parity ====="
 run "parity.sh" bash tools/parity.sh
 

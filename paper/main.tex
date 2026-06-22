@@ -1,0 +1,630 @@
+\documentclass[11pt]{article}
+
+% --- packages (all standard; compiles with pdflatex) ----------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amssymb}
+\usepackage{microtype}
+\newcommand{\cmark}{\checkmark}
+\newcommand{\xmark}{\,--\,}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[round]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+
+\lstset{basicstyle=\ttfamily\small,breaklines=true,columns=fullflexible,
+  frame=single,framerule=0.3pt,rulecolor=\color{gray!40},
+  backgroundcolor=\color{gray!4},xleftmargin=4pt,xrightmargin=4pt}
+
+\newcommand{\tool}{\textsc{jsoncanon}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\tool{}: Trustworthy JSON Canonicalization via\\
+       Dual Independent Implementations and Differential Testing}
+
+\author{Luciano Federico Pereira\thanks{Independent researcher.
+  ORCID: \href{https://orcid.org/0009-0002-4591-6568}{0009-0002-4591-6568}.
+  Source, specification, and reproduction harnesses are released with this paper at
+  \url{https://github.com/lucianofedericopereira/json-canon}.}}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A hash, byte comparison, or \code{git diff} over JSON is only meaningful if the
+JSON has first been reduced to a single deterministic byte stream. Many
+canonicalizers exist, but their correctness usually rests on a single
+implementation and a test suite written by the same author against the same
+mental model. We present \tool{}, a JSON canonicalizer and adjacent toolkit
+built around a different correctness discipline: \emph{two fully independent
+implementations} (in Python and Nim) that are required to produce
+\emph{byte-identical} output, arbitrated by a written specification and enforced
+by a differential-testing gate. We argue that this dual-implementation
+byte-parity contract, combined with validation against \emph{external} oracles
+(a JavaScript engine for number formatting, CPython's regular-expression engine
+for pattern matching), yields markedly higher confidence than single-implementation
+testing, because the two implementations share no code and were written to agree
+only through the specification. To our knowledge no existing tool offers this
+combination: a single self-contained, dependency-free package that pairs two
+byte-identical implementations with coverage of the full JSON-integrity
+lifecycle---lenient ingestion of real-world dialects, canonicalization,
+validation against four schema languages, deterministic binary encodings, and
+structural transforms---where every nontrivial component (shortest-float
+printing, SHA-256, regular-expression matching, the schema engines) is
+reimplemented in-tree rather than delegated to a third-party library. The
+individual capabilities exist as scattered single-language libraries; the
+contribution is their integration under one specification and one correctness
+contract. We describe the canonical form---in particular a
+number-normalization scheme that operates purely on decimal strings and never
+routes a value through a binary float---and the deliberate tension between that
+lossless default and RFC~8785 (the JSON Canonicalization Scheme), which
+\emph{requires} IEEE-754 rounding; we resolve the tension with an opt-in mode
+that loudly reports every value whose meaning changes. We detail
+determinism-by-construction techniques (generated lookup tables shared across
+both languages, a shared regular-expression subset, strict per-code-point
+processing) and a reproducible validation methodology (millions of randomized
+inputs diffed against external oracles, dozens of cross-language parity
+assertions). The result is a single deterministic byte stream over a wide
+superset of real-world JSON dialects, plus interoperable validation
+(JSON~Schema, JSON Type Definition, CDDL, GeoJSON, I-JSON), cross-format
+conversion (CBOR, MessagePack, JData), and structural transforms (JSON Pointer,
+Patch, Merge Patch). We are explicit about what the method does \emph{not}
+guarantee: byte parity proves the two implementations agree, not that they are
+both correct---hence the external oracles---and several schema features are
+deliberate subsets.
+\end{abstract}
+
+\noindent\textbf{Keywords:} canonical JSON; deterministic serialization;
+differential testing; content addressing; reproducibility; RFC~8785; shortest
+float; data science; machine-learning data pipelines.
+
+\section{Introduction}
+
+The promise of canonical JSON is simple to state: take JSON produced by
+\emph{anything}---a Python emitter, a pandas frame, a hand-edited file with
+comments and trailing commas, a JavaScript service---and emit one deterministic
+byte stream, so that \code{cmp}, \code{sha256}, and \code{git diff} over the
+output mean something regardless of the producer. The difficulty is entirely in
+the word ``deterministic.'' Producers disagree on object-member order, on
+whether \code{4.0} and \code{4} are the same number, on \code{ensure\_ascii}
+escaping, on whitespace, and on a long tail of dialect features. A
+canonicalizer must collapse all of that to a single normal form, and---if its
+output is to be used as a content address---it must do so identically across
+platforms, languages, and time.
+
+This raises a question that is rarely asked directly: \emph{how do we know a
+canonicalizer is correct?} The usual answer is a test suite. But a test suite
+written by the implementer encodes the implementer's understanding of the
+specification; a misreading of the specification appears in both the code and
+the tests, and passes. For a primitive whose entire value is that independent
+parties compute the same bytes, this is an uncomfortable foundation.
+
+\tool{} adopts a stronger discipline. It ships \emph{two} implementations, in
+Python and in Nim, that share no source code. A written contract
+(\code{SPEC.md}) is the sole arbiter: where the two disagree, the specification
+wins and at least one implementation has a bug. A continuous gate asserts that
+the two produce byte-identical output across a corpus of fixtures and a matrix
+of options, and---crucially---validates the genuinely hard, non-obvious pieces
+(shortest-float formatting, regular-expression matching) against \emph{external}
+reference implementations rather than against each other. The thesis of this
+paper is that this combination---independent reimplementation for agreement,
+external oracles for correctness---is a practical and effective way to build a
+trustworthy canonicalizer, and that the engineering techniques required to make
+two languages agree byte-for-byte are themselves worth reporting.
+
+The implementations total roughly 5{,}600 lines of Nim and 3{,}700 lines of
+Python; the gate spans fifty-eight cross-language parity assertions and is clean under
+\code{mypy~-{}-strict}, \code{pyright}, and \code{nim~check}.
+
+\paragraph{Contributions.}
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item A \emph{dual-implementation byte-parity contract} for canonical
+        serialization, with a specification as arbiter and a differential gate
+        as enforcement (Section~\ref{sec:arch}).
+  \item A lossless number-canonicalization scheme that operates on decimal
+        strings and never touches a binary float, making cross-language
+        agreement independent of any float printer; and an analysis of its
+        tension with RFC~8785, resolved by a loud, non-silenceable warning
+        discipline (Sections~\ref{sec:spec} and~\ref{sec:jcs}).
+  \item \emph{Determinism-by-construction} techniques for cross-language
+        agreement: lookup tables generated once and embedded in both languages,
+        a shared regular-expression subset, and strict per-code-point processing
+        (Section~\ref{sec:determinism}).
+  \item A reproducible validation methodology using external oracles and
+        large-scale differential fuzzing (Section~\ref{sec:validation}).
+  \item A \emph{self-contained, dependency-free} artifact that integrates the
+        full JSON-integrity lifecycle---lenient ingestion, canonicalization, four
+        schema languages, deterministic binary formats, and structural
+        transforms---under a single specification and parity contract.
+        We are not aware of another tool that combines these properties in one
+        package (Section~\ref{sec:positioning}); the novelty is in the
+        integration, the correctness discipline, and the self-containment,
+        not in any individual algorithm.
+\end{itemize}
+
+We are equally explicit about the limitations (Section~\ref{sec:limitations}):
+parity is agreement, not correctness; some validators are subsets; there are no
+machine-checked proofs.
+
+\section{Scope and Applications}\label{sec:scope}
+
+\paragraph{What the tool is for (and not for).}
+\tool{} is useful precisely when JSON output must be \emph{compared, hashed,
+signed, deduplicated, or diffed}---that is, when the bytes, not just the parsed
+value, carry meaning. It is \emph{not} a faster JSON parser, a data-processing
+framework, or a database. Its design centre of gravity is integrity: the default
+number engine is lossless (Section~\ref{sec:spec}), so the canonical bytes are an
+exact, reversible re-presentation of the input value, suitable as a content
+address. When byte-level interoperability with an external ecosystem is the
+goal---most importantly JSON Web Signature and the broader JOSE
+family~\cite{rfc7515}, which standardize on JCS---the opt-in JCS mode produces
+exactly the bytes those systems expect, at the documented cost of binary64
+rounding. The two regimes (lossless content addressing vs.\ JCS interoperability)
+cover most real needs, and the tool makes the choice explicit, not implicit.
+
+\paragraph{Data science and \texttt{pandas}.}
+Tabular workflows routinely produce ``the same'' table in byte-different JSON:
+columns in a different order, an integer column that became float after a
+\code{groupby}, or simply a different emitter. \tool{} makes such tables
+hash-equal. The package ships a \code{pandas}~\cite{pandas} accessor that
+serializes a DataFrame/Series through a fixed internal orientation and then
+canonicalizes, so two frames holding the same data share a SHA-256 regardless of
+column order or int-vs-float dtype (Listing~\ref{lst:pandas}). This underpins
+content-addressed caching of intermediate artifacts, deduplication of result
+sets, and reproducible-pipeline checks where a stage is re-run only if the
+canonical hash of its inputs changed.
+
+\begin{lstlisting}[caption={Content-addressed equality of tabular data, despite
+  column-order and dtype differences.},label={lst:pandas},language=Python]
+import pandas as pd, jsoncanon.pandas_accessor
+df1 = pd.DataFrame({"price": [4, 10],  "qty": [2, 3]})      # int64
+df2 = pd.DataFrame({"qty": [2., 3.],   "price": [4., 10.]}) # float64, reordered
+df1.jsoncanon.sha256() == df2.jsoncanon.sha256()            # True
+\end{lstlisting}
+
+\paragraph{Statistics and scientific computing.}
+Numeric data exchange is where the lossless default earns its keep.
+High-precision decimals and integers beyond $2^{53}$---survey weights,
+fixed-point monetary values, large identifiers, exact rationals serialized as
+decimals---are preserved character-for-character rather than silently rounded
+through a float, and the two implementations agree without depending on any
+platform's float printer. For array-shaped numeric data, the JData/NeuroJSON
+convention~\cite{jdata} (used in neuroimaging and scientific computing) is decoded
+into plain nested arrays so that N-dimensional datasets can be canonicalized,
+hashed, and deduplicated like any other JSON. The result is a stable content
+identity for datasets that reproduces across machines and language runtimes---a
+precondition for citable, re-runnable computational results.
+
+\paragraph{LLM and AI systems.}
+Large-language-model systems generate and consume JSON constantly---tool-call
+arguments, structured outputs, evaluation records---and benefit from a canonical
+form in several distinct ways. \emph{(i)~Caching:} keying a prompt, tool call, or
+retrieval result by the SHA-256 of its canonical form means semantically
+identical payloads collide in the cache even when a model reorders object keys or
+emits \code{4.0} where a previous call emitted \code{4}. \emph{(ii)~Dataset
+hygiene:} training and evaluation corpora can be deduplicated, and train/test
+contamination detected, by canonical-hash equality rather than fragile string
+matching. \emph{(iii)~Structured-output validation:} model-produced JSON can be
+checked against a JSON~Schema or JSON Type Definition before it is trusted by
+downstream code, with identical verdicts in whichever language the service is
+written in. \emph{(iv)~Reproducible evaluation:} logging canonical hashes of
+inputs and outputs makes eval runs comparable across time and harness versions.
+\emph{(v)~Integrity of identifiers:} models frequently emit large integer IDs;
+the JCS-mode warning discipline (Section~\ref{sec:jcs}) surfaces exactly the cases
+where naive float-based canonicalization would silently corrupt such an ID---a
+failure a single-implementation tool might never reveal.
+
+\paragraph{Security, integrity, and reproducible builds.}
+Canonicalization is a prerequisite for signing and content addressing. Detached
+signatures over JSON (JOSE/JWS~\cite{rfc7515}) require a canonical byte stream;
+content-addressable stores, tamper-evident logs, and build/supply-chain
+attestations all need ``same value $\Rightarrow$ same bytes $\Rightarrow$ same
+hash.'' Here the lossless default is the safe choice: it guarantees the hashed
+bytes reproduce the input exactly, and the dual-implementation discipline reduces
+the risk that a verifier written in a different language computes a different
+digest.
+
+\paragraph{Configuration, DevOps, and cross-language services.}
+Canonicalizing configuration before committing or comparing turns \code{git diff}
+into a semantic diff (the \code{-{}-diff} mode reports changes by JSON path,
+ignoring formatting and key-order noise) and makes drift between environments
+detectable. For polyglot service meshes, the contract that a Python service and a
+Nim service (or any future port adhering to the same specification) emit identical
+canonical bytes is exactly the property needed for cross-language caches,
+idempotency keys, and request signing; the CBOR and MessagePack bridges
+additionally let those bytes be exchanged compactly while remaining deterministic.
+
+\section{Background and Related Work}\label{sec:background}
+
+\paragraph{JSON and canonicalization.}
+JSON is specified by RFC~8259~\cite{rfc8259}, which fixes a grammar but
+deliberately leaves member ordering and number representation to producers.
+Several canonical forms have been proposed to remove that latitude. The most
+prominent standardized one is the JSON Canonicalization Scheme (JCS),
+RFC~8785~\cite{rfc8785}, which sorts object keys by UTF-16 code unit and
+serializes numbers exactly as ECMAScript's \code{Number.prototype.toString}
+would. Other ad-hoc ``canonical JSON'' conventions (e.g.\ the OLPC form) predate
+JCS and differ mainly in number and escaping rules. \tool{}'s default form is
+deliberately \emph{not} JCS---it preserves arbitrary-precision numbers as exact
+decimals---and offers JCS as an explicit mode.
+
+\paragraph{Shortest-float printing.}
+JCS number output is the shortest decimal string that round-trips to the same
+IEEE-754 binary64, with ECMAScript's exponent thresholds. The modern algorithm
+for the shortest round-tripping decimal is Ryu~\cite{ryu}; we port its
+double-to-string core to both languages.
+
+\paragraph{Dialects and binary encodings.}
+Real input includes JSON5~\cite{json5} (unquoted keys, comments, hex, etc.),
+NDJSON, and RFC~7464 JSON text sequences~\cite{rfc7464}. Binary serializations
+with their own determinism stories include CBOR~\cite{rfc8949} (whose
+\S4.2 defines a core deterministic encoding) and MessagePack~\cite{msgpack}.
+JData/NeuroJSON~\cite{jdata} encodes N-dimensional numeric arrays in JSON.
+
+\paragraph{Validation.}
+Schema languages relevant to JSON include JSON~Schema~\cite{jsonschema}
+(Draft~2020-12 and the widely deployed Draft-07), JSON Type Definition
+(RFC~8927)~\cite{rfc8927}, and CDDL (RFC~8610)~\cite{rfc8610}. RFC~7493
+(I-JSON)~\cite{rfc7493} defines an interoperable subset, and RFC~7946
+(GeoJSON)~\cite{rfc7946} a geospatial profile with its own structural rules.
+
+\paragraph{Pointers and patches.}
+JSON Pointer (RFC~6901)~\cite{rfc6901}, JSON Patch (RFC~6902)~\cite{rfc6902},
+and JSON Merge Patch (RFC~7386)~\cite{rfc7386} address and transform documents.
+
+\paragraph{Differential testing.}
+The idea of cross-checking independent implementations to find bugs is
+well established in compilers and parsers~\cite{mckeeman,csmith}. Our
+contribution is not the technique but its application as a \emph{primary
+correctness contract} for a canonicalizer, combined with external oracles for
+the components where ``agreement'' alone would be insufficient.
+
+\paragraph{Positioning relative to existing tools.}\label{sec:positioning}
+Every capability \tool{} provides has prior art, but---to our knowledge---only
+in \emph{separate}, typically single-language, typically dependency-bearing
+libraries: JCS implementations exist per language; \texttt{ajv} and
+\texttt{python-jsonschema} validate JSON~Schema; \texttt{cbor2} and
+\texttt{msgpack} handle the binary formats; \texttt{python-jsonpatch} applies
+RFC~6902. We are not aware of any single tool that simultaneously
+(i)~ships \emph{two independent implementations held to byte-identical output}
+as its correctness contract; (ii)~is \emph{self-contained and free of
+third-party runtime dependencies}, reimplementing even shortest-float conversion
+(Ryu), SHA-256, the regular-expression engine, and the schema validators
+in-tree---in part precisely so that cross-language agreement does not hinge on
+any external library; and (iii)~spans the \emph{entire JSON-integrity lifecycle},
+from lenient ingestion of real-world dialects through canonicalization,
+validation against four schema languages (JSON~Schema, JTD, and CDDL, plus the
+GeoJSON and I-JSON profiles), deterministic binary re-encoding, and structural
+transforms, in one artifact. The novelty claimed here is this integration and
+the discipline behind it, not the rediscovery of any underlying algorithm.
+Table~\ref{tab:comparison} summarizes the gap.
+
+\begin{table}[t]
+\centering
+\caption{Positioning by capability category (illustrative, not an exhaustive
+  feature audit; representative tools, current at time of writing).
+  \cmark~present; \xmark~absent.}
+\label{tab:comparison}
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+ & Dual impl. & No 3rd-party & Canonical & Schema & Binary & Struct. \\
+Tool & (byte-parity) & runtime deps & form & languages & formats & transforms \\
+\midrule
+\tool{} (this work)      & \cmark & \cmark & \cmark & 4 & 2 & \cmark \\
+JCS library (per lang.)  & \xmark & varies & \cmark (JCS) & 0 & \xmark & \xmark \\
+\texttt{ajv}             & \xmark & \xmark & \xmark & 1 & \xmark & \xmark \\
+\texttt{python-jsonschema} & \xmark & \xmark & \xmark & 1 & \xmark & \xmark \\
+\texttt{cbor2} / \texttt{msgpack} & \xmark & varies & \xmark & 0 & 1 & \xmark \\
+\texttt{json-patch}      & \xmark & \xmark & \xmark & 0 & \xmark & \cmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{The Canonical Form}\label{sec:spec}
+
+The canonical output is UTF-8 with no byte-order mark, no insignificant
+whitespace, separators \code{,} and \code{:}, and no trailing newline (unless
+requested). Three rules carry the weight.
+
+\paragraph{Numbers (the important one).}
+Numbers are normalized \emph{as decimal strings}, using only string and
+integer-digit operations; a number token is never parsed into a binary float.
+Given a token, the implementation decomposes it into sign, integer digits,
+fraction digits, and exponent, forms the significand, strips leading and
+trailing zeros (tracking the decimal point), and re-emits a plain decimal. Thus
+\code{4.0}, \code{4.50e1}, and \code{4} all canonicalize to \code{4};
+\code{0.10} to \code{0.1}; \code{1e3} to \code{1000}; and a thirty-digit
+integer survives exactly. Two consequences matter. First, the result is
+lossless for big integers and high-precision decimals. Second, and central to
+this paper, the result is \emph{independent of any language's float printer}:
+because no float is involved, the Python and Nim implementations agree by
+construction rather than by luck.
+
+\paragraph{Object member order.}
+Members are sorted ascending by Unicode code point---the sequence of scalar
+values---which is deterministic and identical across implementations. (UTF-8
+byte order coincides with code-point order, so a byte-wise sort suffices.) This
+differs from JCS, which sorts by UTF-16 code unit; the two agree except for
+astral-plane keys, and the JCS ordering is available in JCS mode
+(Section~\ref{sec:jcs}).
+
+\paragraph{Strings.}
+Every character is emitted as raw UTF-8 except those that must be escaped:
+\code{"}, \code{\textbackslash}, the five short escapes, and other C0 controls
+as lowercase \code{\textbackslash u00xx}. Non-ASCII characters and \code{/} are
+never escaped, which erases all \code{ensure\_ascii} differences between
+producers.
+
+The input grammar is a deliberate superset of RFC~8259: BOM autodetection;
+JSON5 features (unquoted Unicode/escaped identifier keys, single quotes,
+comments, trailing commas, hex and leading-plus numbers, extra string escapes,
+line continuations); Python literals (\code{True}/\code{False}/\code{None});
+and non-finite tokens. Every non-standard feature is normalized away on output
+and, in lint mode, reported.
+
+\section{Architecture and the Byte-Parity Contract}\label{sec:arch}
+
+Both implementations share one internal shape: a lenient parser produces a
+value tree (null, bool, number-as-raw-token, string, array, object,
+non-finite), and a serializer walks the tree to produce canonical bytes.
+Numbers are carried as their raw token text and normalized only at serialization
+time, which is what makes the decimal-string scheme above possible.
+
+The contract is: \emph{for the same input and options, the Python and Nim CLIs
+must emit identical bytes.} \code{SPEC.md} is the arbiter; a disagreement is by
+definition a bug in at least one implementation, never a matter of taste. The
+contract is enforced by \code{tools/parity.sh}, which runs both implementations
+over a fixture corpus and an option matrix (number formats, output encodings
+with and without BOM, lint, JCS, the binary formats, the validators, the
+transforms) and asserts byte-identical results against each other and against
+committed golden files. A second script, \code{tools/check.sh}, wraps the parity
+gate together with static analysis (\code{mypy~-{}-strict}, \code{pyright},
+\code{nim~check}) and both unit-test suites. Continuous integration runs the
+whole gate, plus the fuzzers of Section~\ref{sec:validation}, on every change.
+
+This architecture turns specification ambiguity into a mechanical signal. When
+the specification is silent or unclear, the two implementations tend to diverge,
+the gate fails, and the ambiguity must be resolved in \code{SPEC.md} before
+either implementation is ``right.''
+
+\section{Determinism by Construction}\label{sec:determinism}
+
+Byte parity across two languages is not free; several techniques are required
+to prevent each language's own libraries from introducing drift.
+
+\paragraph{Numbers without floats.}
+As above, decimal-string normalization removes the single largest source of
+cross-language disagreement---each language's float-to-string routine---from the
+default path entirely.
+
+\paragraph{Generated lookup tables.}
+Where data is unavoidable, it is generated once and embedded \emph{identically}
+in both languages rather than computed from each language's standard library.
+Two cases: (i)~the Ryu shortest-float core needs two 128-bit power-of-five
+tables (326 and 342 entries); these are produced by a generator script
+(\code{tools/gen\_ryu\_tables.py}) from exact big-integer arithmetic and emitted
+as a Nim source file, with the generation formulas anchored against published
+constants. (ii)~JSON5 unquoted-key classification follows the ECMAScript
+\code{IdentifierName} grammar, which depends on Unicode general categories;
+because Python's \code{unicodedata} and Nim's \code{std/unicode} can differ by
+Unicode version, we generate \code{ID\_Start}/\code{ID\_Continue} code-point
+ranges once (pinned to one Unicode version) and embed the same table in both,
+so classification cannot drift.
+
+\paragraph{A shared regular-expression subset.}
+JSON~Schema's \code{pattern} keyword requires regular-expression matching.
+Delegating to each language's regex engine would break parity on edge cases, so
+we implement one small backtracking regex engine---literals, \code{.}, character
+classes, anchors, groups, alternation, the standard quantifiers, and the common
+escapes---with identical semantics in both languages, and validate it
+externally (Section~\ref{sec:validation}).
+
+\paragraph{Per-code-point processing.}
+Operations that index ``characters''---UTF-16 key ordering for JCS, string
+length bounds for schema validation, identifier scanning---are defined on
+Unicode code points, matching Python's native string indexing, and the Nim port
+decodes to code points rather than operating on UTF-8 bytes where it would
+differ.
+
+\paragraph{Pure SHA-256.}
+Because Nim's standard library ships no SHA-256, the \code{-{}-sha256} content
+hash uses a dependency-free in-tree implementation, validated against Python's
+\code{hashlib}; this keeps the digest a function of the canonical bytes alone,
+with no third-party variation.
+
+\section{The Lossless/JCS Tension}\label{sec:jcs}
+
+The lossless decimal default and RFC~8785 are in direct conflict on numbers.
+JCS mandates that each number be serialized as ECMAScript's
+\code{Number.prototype.toString}: parse to IEEE-754 binary64 and print the
+shortest round-tripping decimal. This necessarily rounds: the integer
+\code{9007199254740993} becomes \code{9007199254740992}, and values beyond the
+binary64 range are not representable at all. The lossless engine, by contrast,
+would preserve \code{9007199254740993} exactly.
+
+\tool{} treats this as a first-class design decision rather than a silent
+behavior. The lossless engine is the default. JCS is an opt-in mode
+(\code{-{}-jcs}) that switches both the number serializer (to a from-scratch
+port of Ryu's double-to-string, followed by the ECMAScript formatting
+thresholds) and the key ordering (to UTF-16 code units). When JCS rounds or
+overflows a value, the tool emits a warning naming the JSON path and the exact
+before/after, e.g.\ \code{9007199254740993 -> 9007199254740992 (IEEE-754
+rounding; not reversible)}. The warning cannot be silently discarded: the
+quiet flag that suppresses it on standard error \emph{requires} a log
+destination, so a meaning-changing conversion always leaves a trace. This
+``warn, never silently lose'' discipline is, we argue, the right default for a
+tool whose entire purpose is that the output faithfully represents the input.
+
+\section{Validation Methodology}\label{sec:validation}
+
+Byte parity establishes that the two implementations \emph{agree}. It does not
+establish that they are \emph{correct}: a shared misreading of the specification
+could make both wrong in the same way. We address this by validating the
+genuinely hard components against external reference implementations, and by
+fuzzing at scale. All harnesses are in-tree and reproducible.
+
+\paragraph{Shortest-float vs.\ a JavaScript engine.}
+The Ryu port is the riskiest numeric component. We feed the bit patterns of
+several million random doubles (plus hard edge cases: subnormals, the maximum
+double, every exponent-threshold boundary) to the Nim implementation and compare
+each output, byte for byte, to Node.js's \code{String(x)}---the very function
+RFC~8785 references. We have run this to ten million doubles with zero
+mismatches. Separately, a cross-language harness feeds the same number tokens to
+both CLIs in JCS mode and confirms identical output, exercising the
+decimal-to-double parse on both sides.
+
+\paragraph{Regex subset vs.\ CPython.}
+The shared regex engine is validated two ways simultaneously over tens of
+thousands of randomly generated pattern/text pairs: each result is compared
+against CPython's \code{re.search} (correctness for the supported subset) and
+against the Nim port (cross-language parity). Both held at forty thousand pairs.
+
+\paragraph{Half-precision floats, exhaustively.}
+The CBOR encoder selects the shortest of float16/32/64. The float16 codec is
+verified \emph{exhaustively} against Python's \code{struct} over all $2^{16}$
+bit patterns.
+
+\paragraph{Salvage mode, by mutation.}
+The best-effort recovery mode (\code{-{}-force}) is fuzzed over thousands of
+randomly corrupted documents, asserting that both implementations produce
+identical recovered output \emph{and} identical recovery reports. This fuzzer
+surfaced a latent parity bug---malformed number tokens that the lenient parser
+accepted but the serializer later rejected with differing error messages---which
+we fixed by validating number tokens at parse time in both languages.
+
+\paragraph{The committed gate.}
+Beyond fuzzing, the parity gate asserts fifty-eight byte-identical outcomes across
+fixtures and the option/format/validator/transform matrix, and both unit-test
+suites pass under strict static analysis. Table~\ref{tab:validation} summarizes.
+
+\begin{table}[t]
+\centering
+\caption{Validation harnesses and their oracles.}
+\label{tab:validation}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Component & Oracle & Scale \\
+\midrule
+Ryu shortest float & Node.js \code{String(x)} & $10^7$ random doubles \\
+JCS number tokens & cross-impl (Nim==Python) & $5\times10^5$ tokens \\
+Regex subset & CPython \code{re} \emph{and} cross-impl & $4\times10^4$ pairs \\
+CBOR float16 codec & Python \code{struct} & all $2^{16}$ patterns \\
+\code{-{}-force} salvage & cross-impl (output + report) & $4\times10^3$ mutations \\
+Full canonical form & cross-impl + golden files & 58 parity assertions \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Feature Surface}\label{sec:features}
+
+On top of canonicalization, the same value-tree substrate supports a range of
+JSON-adjacent operations, each implemented twice and held to the same parity
+contract. Table~\ref{tab:features} lists them. Three categories are worth
+noting. \emph{Validators} report conformance issues at a JSON path:
+I-JSON~(RFC~7493), GeoJSON~(RFC~7946), JTD~(RFC~8927), CDDL~(RFC~8610, a
+practical subset), and JSON~Schema (Draft~2020-12 and Draft-07, including
+\code{\$ref}/\code{\$anchor}, the applicators, \code{unevaluated*}, and opt-in
+\code{format} assertion). \emph{Cross-format} conversion uses deterministic
+encodings: CBOR core deterministic encoding (RFC~8949~\S4.2) and an analogous
+deterministic MessagePack, both round-tripped and byte-checked across
+implementations. \emph{Transforms} run before canonicalization: JSON Pointer
+extraction, JSON Patch, and JSON Merge Patch.
+
+\begin{table}[t]
+\centering
+\caption{Capabilities, all dual-implemented and parity-checked.}
+\label{tab:features}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Area & Capability & Reference \\
+\midrule
+Canonical form & lossless decimal numbers, code-point key sort & this work \\
+                & JCS mode (Ryu numbers, UTF-16 sort) & RFC 8785 \\
+Input dialects  & JSON5 keys/escapes/numbers & JSON5 \\
+                & NDJSON; JSON text sequences; concatenated & RFC 7464 \\
+                & \code{-{}-force} salvage of malformed input & this work \\
+Cross-format    & CBOR \code{-{}-from}/\code{-{}-to} & RFC 8949 \\
+                & MessagePack \code{-{}-from}/\code{-{}-to} & MessagePack \\
+                & JData N-D arrays \code{-{}-from jdata} & NeuroJSON \\
+Validation      & I-JSON; GeoJSON & RFC 7493/7946 \\
+                & JTD; CDDL (subset) & RFC 8927/8610 \\
+                & JSON Schema 2020-12/draft-07 (+\code{-{}-format}) & JSON Schema \\
+Transforms      & JSON Pointer; Patch; Merge Patch & RFC 6901/6902/7386 \\
+Utility         & lint; \code{-{}-check}; \code{-{}-sha256}; \code{-{}-diff} & this work \\
+                & output re-encoding (UTF-8/16/32, latin-1, BOM) & this work \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Limitations}\label{sec:limitations}
+
+We state the boundaries of the method plainly.
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{Parity is agreement, not correctness.} Two implementations can
+        share a misreading of the specification and agree on the wrong output.
+        This is precisely why the hard components are validated against
+        \emph{external} oracles (Node.js, CPython's \code{re}, Python
+        \code{struct}); for components without an external oracle, confidence
+        rests on the specification and the test suite, as in any project.
+  \item \textbf{No machine-checked proofs.} Correctness is established
+        empirically (differential fuzzing) and by review, not by formal
+        verification.
+  \item \textbf{Deliberate subsets.} The CDDL validator covers common
+        constructs, not the full grammar (no generics, sockets, or control
+        operators); JSON~Schema omits remote \code{\$ref} and \code{\$dynamicRef}
+        (which require network resolution / dynamic scope) and the
+        \code{content*} keywords, and its \code{unevaluated*} support covers the
+        common applicators rather than the full recursive annotation algorithm.
+        The bundled regex engine is a subset of ECMA-262.
+  \item \textbf{In-memory model.} Documents are parsed into a value tree;
+        multi-gigabyte single documents are out of scope (record-oriented
+        NDJSON and JSON text sequences are already processed incrementally).
+  \item \textbf{Lossy by request.} JCS, CBOR, and MessagePack route numbers
+        through binary64 (and integers beyond 64 bits, for MessagePack, through
+        a float); this is inherent to those formats and is reported rather than
+        hidden.
+\end{itemize}
+
+\section{Conclusion}\label{sec:conclusion}
+
+\tool{} is, to our knowledge, the first self-contained, dependency-free toolkit
+to span the full JSON-integrity lifecycle in a single artifact, and it
+demonstrates that a canonicalization tool can be built around a correctness
+discipline stronger than single-implementation testing: two
+independent implementations forced to agree byte-for-byte through a written
+specification, with the genuinely hard components cross-checked against external
+reference implementations. The engineering required to make two languages agree
+exactly---decimal-only number normalization, generated lookup tables shared
+across languages, a shared regex subset, strict per-code-point processing---is
+reusable beyond this project. The same substrate cleanly supports a broad
+surface of JSON-adjacent functionality (dialect ingestion, validation against
+four schema languages, deterministic binary formats, and structural transforms)
+without compromising the parity contract. We believe the dual-implementation,
+externally-oracled approach is a good fit for any primitive whose value depends
+on independent parties computing the same bytes.
+
+\paragraph{Availability and reproduction.}
+The two implementations, the specification, the golden fixtures, the validation
+harnesses, and the continuous-integration configuration are released together at
+\url{https://github.com/lucianofedericopereira/json-canon}. A
+single script, \code{tools/reproduce.sh}, rebuilds both implementations and runs
+the full gate followed by every differential fuzzer (each with a fixed seed)
+against its external oracle, reproducing Table~\ref{tab:validation} end to end;
+\code{tools/reproduce.sh quick} runs the same pipeline at reduced scale for a
+fast check. Every quantitative claim in this paper is reproducible by that one
+command.
+
+\bibliographystyle{abbrvnat}
+\bibliography{references}
+
+\end{document}

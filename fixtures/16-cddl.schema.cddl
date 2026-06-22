@@ -1,0 +1,7 @@
+; a small person record
+person = {
+  name: tstr,
+  age: uint,
+  ? tags: [* tstr],
+  status: "active" / "inactive"
+}

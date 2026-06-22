@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id":    {"type": "integer", "minimum": 1},
+    "email": {"type": "string", "pattern": "^[a-z0-9]+@[a-z]+\\.[a-z]+$"},
+    "tags":  {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  },
+  "required": ["id", "email"],
+  "additionalProperties": false
+}

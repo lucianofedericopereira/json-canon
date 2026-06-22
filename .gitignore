@@ -216,3 +216,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# jsoncanon: Nim build artifacts (sources are *.nim; compiled binaries are not)
+# ---------------------------------------------------------------------------
+nimcache/
+~/.cache/nim/
+/nim/jsoncanon_cli
+/nim/tests/test_canon
+/nim/tests/ryu_filter
+/nim/tests/cbor_filter
+/nim/tests/regex_filter
+*.exe
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.toc
